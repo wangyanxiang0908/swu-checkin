@@ -1,0 +1,43 @@
+name: 邮件通知测试
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mail-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 检查邮件配置
+        env:
+          MAIL_SERVER: ${{ secrets.MAIL_SERVER }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: |
+          for name in MAIL_SERVER MAIL_PORT MAIL_USERNAME MAIL_PASSWORD NOTIFY_EMAIL; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing secret: $name"
+              exit 1
+            fi
+          done
+      - name: 发送配置测试邮件
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 'SWU 查寝打卡｜邮件通知配置测试'
+          to: ${{ secrets.NOTIFY_EMAIL }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: |
+            这是一封邮件通知配置测试邮件，并非打卡失败提醒。
+
+            收到此邮件说明云端任务可以通过 QQ 邮箱发送通知。
+            今后自动打卡重试后仍失败时，会向此邮箱发送异常通知。
+            签到成功、今日已签到、正常请假不会发送异常邮件。
+
+            测试运行记录：
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
