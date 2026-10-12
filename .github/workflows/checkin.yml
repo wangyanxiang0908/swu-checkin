@@ -14,6 +14,9 @@ on:
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Shanghai
     strategy:
       # 多账号并行执行，失败不影响其他账号
       fail-fast: false
@@ -121,7 +124,7 @@ jobs:
           echo "========================================="
           
           # 1=成功, 2=已签到；其余状态已在脚本内重试，仍失败才告警
-          if [ "$status_code" != "1" ] && [ "$status_code" != "2" ]; then
+          if [ "$status_code" != "1" ] && [ "$status_code" != "2" ] && [ "$status_code" != "5" ]; then
             echo ""
             echo "⚠️  多次重试后仍异常，准备发送通知邮件"
             exit 1
@@ -174,7 +177,7 @@ jobs:
 
       - name: 发送通知邮件
         id: send_mail
-        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2' && steps.mail_config.outputs.configured == 'true'
+        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2' && steps.checkin.outputs.status_code != '5' && steps.mail_config.outputs.configured == 'true'
         continue-on-error: true
         uses: dawidd6/action-send-mail@v3
         with:
@@ -272,7 +275,7 @@ jobs:
             </html>
 
       - name: 邮件通知结果
-        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2'
+        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2' && steps.checkin.outputs.status_code != '5'
         run: |
           if [ "${{ steps.mail_config.outputs.configured }}" != "true" ]; then
             echo "⚠️ 邮件通知未发送：邮件配置不完整"
@@ -298,6 +301,8 @@ jobs:
             echo "✅ 签到成功"
           elif [ "${{ steps.checkin.outputs.status_code }}" = "2" ]; then
             echo "✅ 已签到，无需重复"
+          elif [ "${{ steps.checkin.outputs.status_code }}" = "5" ]; then
+            echo "✅ 请假期间无需签到"
           else
             echo "⚠️ 签到任务异常"
             if [ "${{ steps.mail_config.outputs.configured }}" = "true" ] && [ "${{ steps.send_mail.outcome }}" = "success" ]; then
@@ -309,3 +314,7 @@ jobs:
             fi
           fi
           echo "========================================="
+
+          if [ "${{ steps.checkin.outputs.status_code }}" != "1" ] && [ "${{ steps.checkin.outputs.status_code }}" != "2" ] && [ "${{ steps.checkin.outputs.status_code }}" != "5" ]; then
+            exit 1
+          fi
