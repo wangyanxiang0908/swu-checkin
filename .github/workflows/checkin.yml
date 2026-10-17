@@ -134,128 +134,7 @@ jobs:
           echo "✅ 签到正常完成"
         continue-on-error: true
 
-      - name: 格式化执行时间
-        id: format_time
-        if: always()
-        run: |
-          echo "beijing_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
-
-      - name: 检查邮件通知配置
-        id: mail_config
-        if: always()
-        env:
-          MAIL_SERVER: ${{ secrets.MAIL_SERVER }}
-          MAIL_PORT: ${{ secrets.MAIL_PORT }}
-          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
-          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
-        run: |
-          required_vars=(MAIL_SERVER MAIL_PORT MAIL_USERNAME MAIL_PASSWORD NOTIFY_EMAIL)
-          missing_vars=()
-
-          for variable_name in "${required_vars[@]}"; do
-            if [ -z "${!variable_name:-}" ]; then
-              missing_vars+=("$variable_name")
-            fi
-          done
-
-          if [ "${#missing_vars[@]}" -gt 0 ]; then
-            missing_text=$(IFS=', '; echo "${missing_vars[*]}")
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "missing=$missing_text" >> "$GITHUB_OUTPUT"
-            echo "::warning::邮件通知配置不完整，已跳过发送。缺少: $missing_text"
-            echo ""
-            echo "⚠️ 邮件通知未发送：配置不完整"
-            echo "缺少配置: $missing_text"
-            echo "请进入 GitHub 仓库 Settings → Secrets and variables → Actions，补齐以上 Secret。"
-            echo "签到结果仍以本次运行的状态码和 Actions 日志为准。"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "missing=" >> "$GITHUB_OUTPUT"
-            echo "✅ 邮件通知配置检查通过"
-          fi
-
-      - name: 生成易懂的打卡提醒
-        id: mail_text
-        if: always()
-        env:
-          CHECKIN_STATUS: ${{ steps.checkin.outputs.status_code }}
-          RUN_EVENT: ${{ github.event_name }}
-          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          python - <<'PY'
-          import os, html, uuid
-          from datetime import datetime, timedelta
-          from zoneinfo import ZoneInfo
-
-          now = datetime.now(ZoneInfo('Asia/Shanghai'))
-          code = os.getenv('CHECKIN_STATUS', '')
-          outside = os.getenv('RUN_EVENT') == 'schedule' and not (21 * 60 <= now.hour * 60 + now.minute <= 23 * 60 + 30)
-          date = (now - timedelta(days=1) if now.hour < 21 else now).strftime('%m月%d日')
-          if code == '0' and outside:
-              title = '自动打卡晚到了，请核对昨晚的记录' if now.hour < 21 else '自动打卡晚到了，请核对今晚的记录'
-              happened = f'云端任务在{now:%m月%d日 %H:%M}才执行，已超出打卡时段。这次查询没有找到任务，无法确认{date}是否已签到。'
-              action = f'打开钉钉，查看{date}的查寝记录。如果显示“已签到”，这封邮件可以忽略；如果没有签到，请按学校要求联系老师处理。'
-              note = '这封邮件不表示昨晚的成功记录被取消。云端延迟也可能导致漏打卡，请以学校记录为准。'
-          elif code == '0':
-              title = '还没查到今晚的打卡任务，请打开钉钉确认'
-              happened = '自动程序多次查询后，仍没有查到今晚的任务。可能任务尚未发布，也可能查询结果异常；不能据此认定你没有签到。'
-              action = '打开钉钉查看今晚的查寝记录。已签到就不用操作；如果任务已发布但还没签到，请在规定时间内手动打卡。'
-              note = '最终是否签到，以学校页面显示的记录为准。'
-          elif code == '3':
-              title = '自动打卡没能登录，请手动确认'
-              happened = '自动程序多次尝试后，仍没能登录学校系统，本次没有完成自动打卡。原因可能是网络、学校认证系统或账号信息异常。'
-              action = '先打开钉钉查看今晚是否已签到。没签到且仍在规定时间内，请手动打卡；如果你自己也无法登录，再检查校园账号密码。'
-              note = '不要只凭这封邮件认定密码错误。已签到则不用重复操作。'
-          elif code == 'CONFIG_ERROR':
-              title = '自动打卡账号配置不完整，需要补齐'
-              happened = '云端没有读取到完整的校园账号和密码，本次没有执行自动打卡。'
-              action = '先在钉钉确认并完成今晚打卡，再回到这条 Codex 聊天修复账号配置。密码不要写在邮件或聊天里。'
-              note = '已签到则不用重复操作。'
-          else:
-              title = '暂时无法确认自动打卡成功，请打开钉钉查看'
-              happened = '本次自动运行遇到网络、学校系统或程序异常，未能确认打卡成功。'
-              action = '打开钉钉看今晚的查寝记录。已签到就不用操作；还没签到且仍在规定时间内，请手动打卡。'
-              note = '这封邮件表示自动运行异常，不代表你的手动打卡失败。'
-
-          link = os.getenv('RUN_LINK', '')
-          body = f'{title}\n\n发生了什么：\n{happened}\n\n你现在要做什么：\n{action}\n\n{note}\n\n提醒发送时间：{now:%Y年%m月%d日 %H:%M}（北京时间）\n\n如果需要排查，可把这封邮件或下面的记录发给我：\n{link}'
-          escape = html.escape
-          html_body = f'''<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><body style="margin:0;background:#f5f6f8;font-family:Arial,'Microsoft YaHei',sans-serif;color:#20252b"><div style="max-width:580px;margin:24px auto;padding:28px;background:white;border-radius:12px"><p style="color:#64748b;font-size:14px">校园打卡提醒</p><h1 style="font-size:23px;line-height:1.5">{escape(title)}</h1><h2 style="font-size:17px;margin-top:24px">发生了什么</h2><p style="font-size:16px;line-height:1.8">{escape(happened)}</p><div style="padding:18px;background:#eef5ff;border-radius:8px"><h2 style="font-size:17px;margin:0 0 8px">你现在要做什么</h2><p style="font-size:16px;line-height:1.8;margin:0">{escape(action)}</p></div><p style="font-size:14px;line-height:1.8;color:#64748b">{escape(note)}</p><p style="font-size:13px;color:#64748b">{now:%Y年%m月%d日 %H:%M} · 北京时间</p><p style="font-size:13px">看不懂或需要排查，可把这封邮件发回 Codex 聊天。<a href="{escape(link, quote=True)}">查看运行记录</a></p></div></body></html>'''
-          for name, value in [('subject', '校园打卡提醒｜' + title), ('body', body), ('html_body', html_body)]:
-              marker = 'MAIL_' + uuid.uuid4().hex
-              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-                  output.write(f'{name}<<{marker}\n{value}\n{marker}\n')
-          PY
-
-      - name: 发送通知邮件
-        id: send_mail
-        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2' && steps.checkin.outputs.status_code != '5' && steps.mail_config.outputs.configured == 'true'
-        continue-on-error: true
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.MAIL_SERVER }}
-          server_port: ${{ secrets.MAIL_PORT }}
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: ${{ steps.mail_text.outputs.subject }}
-          to: ${{ secrets.NOTIFY_EMAIL }}
-          from: ${{ secrets.MAIL_USERNAME }}
-          body: ${{ steps.mail_text.outputs.body }}
-          html_body: ${{ steps.mail_text.outputs.html_body }}
-
-      - name: 邮件通知结果
-        if: always() && steps.checkin.outputs.status_code != '1' && steps.checkin.outputs.status_code != '2' && steps.checkin.outputs.status_code != '5'
-        run: |
-          if [ "${{ steps.mail_config.outputs.configured }}" != "true" ]; then
-            echo "⚠️ 邮件通知未发送：邮件配置不完整"
-            echo "缺少配置: ${{ steps.mail_config.outputs.missing }}"
-          elif [ "${{ steps.send_mail.outcome }}" != "success" ]; then
-            echo "⚠️ 邮件通知发送失败：请检查 SMTP 服务器、端口、邮箱账号和授权码"
-            echo "签到结果不受邮件发送失败影响，详细 SMTP 错误请查看上一步日志"
-          else
-            echo "✅ 异常通知邮件已发送"
-          fi
+      # 用户已关闭邮件通知：不再读取邮箱凭证或发送邮件。
 
       - name: 最终状态检查
         if: always()
@@ -275,16 +154,11 @@ jobs:
             echo "✅ 请假期间无需签到"
           else
             echo "⚠️ 签到任务异常"
-            if [ "${{ steps.mail_config.outputs.configured }}" = "true" ] && [ "${{ steps.send_mail.outcome }}" = "success" ]; then
-              echo "✅ 异常通知邮件已发送"
-            elif [ "${{ steps.mail_config.outputs.configured }}" != "true" ]; then
-              echo "⚠️ 邮件通知未发送：配置不完整"
-            else
-              echo "⚠️ 邮件通知发送失败，请检查 SMTP 配置"
-            fi
+            echo "邮件通知已关闭，请在 Actions 查看运行结果"
           fi
           echo "========================================="
 
           if [ "${{ steps.checkin.outputs.status_code }}" != "1" ] && [ "${{ steps.checkin.outputs.status_code }}" != "2" ] && [ "${{ steps.checkin.outputs.status_code }}" != "5" ]; then
             exit 1
           fi
+
