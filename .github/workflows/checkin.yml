@@ -1,164 +1,42 @@
 name: 自动签到
-
-# 停用方式：仓库 Actions → 自动签到 → Disable workflow
-# GitHub 官方禁用 workflow 后，定时任务和手动触发都会停止
-
+run-name: 查寝｜${{ inputs.expected_date || '手动' }}｜${{ inputs.diagnostic && '只读检查' || '自动打卡' }}
 on:
-  schedule:
-    # 每天北京时间 21:15、21:45（UTC 13:15、13:45）
-    # 避开整点高峰，并通过第二次执行降低 GitHub Actions 排队延迟造成的漏打卡概率
-    - cron: '15 13 * * *'
-    - cron: '45 13 * * *'
-  workflow_dispatch:  # 允许手动触发
-
+  workflow_dispatch:
+    inputs:
+      expected_date:
+        description: '本次目标日期，北京时间 YYYY-MM-DD；留空则使用当天'
+        type: string
+        required: false
+      diagnostic:
+        description: '只检查登录和当天任务，不提交签到'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: swu-checkin
+  cancel-in-progress: false
 jobs:
   checkin:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       TZ: Asia/Shanghai
-    strategy:
-      # 多账号并行执行，失败不影响其他账号
-      fail-fast: false
-      matrix:
-        account:
-          - name: "账号1"
-            username_secret: SWU_USERNAME
-            password_secret: SWU_PASSWORD
-          # 如需添加更多账号，取消下面的注释并配置对应的 Secrets
-          # - name: "账号2"
-          #   username_secret: SWU_USERNAME_2
-          #   password_secret: SWU_PASSWORD_2
-          # - name: "账号3"
-          #   username_secret: SWU_USERNAME_3
-          #   password_secret: SWU_PASSWORD_3
-    
-    name: 签到 - ${{ matrix.account.name }}
-    
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-      
-      - name: 设置 Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: 'pip'
-      
-      - name: 安装依赖
-        run: |
-          echo "========================================="
-          echo "开始安装依赖..."
-          echo "========================================="
-          pip install --upgrade pip
-          pip install -e .
-          echo ""
-          echo "✅ 依赖安装完成"
-          echo ""
-      
-      - name: 执行签到
-        id: checkin
+          cache: pip
+      - name: 安装运行依赖
+        run: pip install -e .
+      - name: 执行打卡或只读检查
         env:
-          SWUDK_USERNAME: ${{ secrets[matrix.account.username_secret] }}
-          SWUDK_PASSWORD: ${{ secrets[matrix.account.password_secret] }}
-          # 瞬时失败自动重试：总尝试 3 次，首次等待 8 秒后指数退避
-          SWUDK_MAX_ATTEMPTS: "3"
-          SWUDK_RETRY_DELAY: "8"
-        run: |
-          echo "========================================="
-          echo "开始执行签到任务"
-          echo "账号名称: ${{ matrix.account.name }}"
-          echo "时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          if [ -n "$SWUDK_USERNAME" ]; then
-            # 短账号禁止显示首尾字符，避免首尾片段重叠后泄露完整账号
-            masked_username="****"
-            if [ "${#SWUDK_USERNAME}" -ge 8 ]; then
-              masked_username="${SWUDK_USERNAME:0:2}****${SWUDK_USERNAME: -2}"
-            fi
-            echo "账号: $masked_username"
-          else
-            echo "⚠️  账号未配置（Secret: ${{ matrix.account.username_secret }}）"
-          fi
-          echo "========================================="
-          echo ""
-          
-          if [ -z "$SWUDK_USERNAME" ] || [ -z "$SWUDK_PASSWORD" ]; then
-            echo "❌ 账号或密码未配置，跳过签到"
-            echo "请在 GitHub Secrets 中配置："
-            echo "  - ${{ matrix.account.username_secret }}"
-            echo "  - ${{ matrix.account.password_secret }}"
-            echo "status_code=CONFIG_ERROR" >> "$GITHUB_OUTPUT"
-            echo "status_msg=账号或密码未配置" >> "$GITHUB_OUTPUT"
-            echo "full_result=账号或密码未配置" >> "$GITHUB_OUTPUT"
-            echo "exit_code=1" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          
-          # main() 对签到异常状态返回 1；关闭 errexit，确保仍能读取并解析结果
-          set +e
-          python -m swu_checkin.check_in > checkin_result.txt 2>&1
-          exit_code=$?
-          set -e
-          
-          echo ""
-          echo "========================================="
-          echo "签到结果"
-          echo "========================================="
-          cat checkin_result.txt
-          echo ""
-          
-          # 提取返回码和消息
-          result_line=$(cat checkin_result.txt | tail -1)
-          status_code=$(echo "$result_line" | grep -oP '\[\K[0-9]+(?=\])')
-          status_msg=$(echo "$result_line" | grep -oP '\] \K.*')
-          
-          echo "status_code=$status_code" >> $GITHUB_OUTPUT
-          echo "status_msg=$status_msg" >> $GITHUB_OUTPUT
-          echo "full_result=$result_line" >> $GITHUB_OUTPUT
-          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
-          
-          echo "========================================="
-          echo "状态码: $status_code"
-          echo "状态信息: $status_msg"
-          echo "退出码: $exit_code"
-          echo "========================================="
-          
-          # 1=成功, 2=已签到；其余状态已在脚本内重试，仍失败才告警
-          if [ "$status_code" != "1" ] && [ "$status_code" != "2" ] && [ "$status_code" != "5" ]; then
-            echo ""
-            echo "⚠️  多次重试后仍异常，准备发送通知邮件"
-            exit 1
-          fi
-          
-          echo ""
-          echo "✅ 签到正常完成"
-        continue-on-error: true
-
-      # 用户已关闭邮件通知：不再读取邮箱凭证或发送邮件。
-
-      - name: 最终状态检查
-        if: always()
-        run: |
-          echo ""
-          echo "========================================="
-          echo "任务执行完成 - ${{ matrix.account.name }}"
-          echo "========================================="
-          echo "状态码: ${{ steps.checkin.outputs.status_code }}"
-          echo "状态信息: ${{ steps.checkin.outputs.status_msg }}"
-          
-          if [ "${{ steps.checkin.outputs.status_code }}" = "1" ]; then
-            echo "✅ 签到成功"
-          elif [ "${{ steps.checkin.outputs.status_code }}" = "2" ]; then
-            echo "✅ 已签到，无需重复"
-          elif [ "${{ steps.checkin.outputs.status_code }}" = "5" ]; then
-            echo "✅ 请假期间无需签到"
-          else
-            echo "⚠️ 签到任务异常"
-            echo "邮件通知已关闭，请在 Actions 查看运行结果"
-          fi
-          echo "========================================="
-
-          if [ "${{ steps.checkin.outputs.status_code }}" != "1" ] && [ "${{ steps.checkin.outputs.status_code }}" != "2" ] && [ "${{ steps.checkin.outputs.status_code }}" != "5" ]; then
-            exit 1
-          fi
-
+          SWUDK_USERNAME: ${{ secrets.SWU_USERNAME }}
+          SWUDK_PASSWORD: ${{ secrets.SWU_PASSWORD }}
+          SWUDK_EXPECTED_DATE: ${{ inputs.expected_date }}
+          SWUDK_DIAGNOSTIC: ${{ inputs.diagnostic && '1' || '0' }}
+          SWUDK_MAX_ATTEMPTS: '3'
+          SWUDK_RETRY_DELAY: '8'
+        run: python -m swu_checkin.runner
+      # 不发送邮件。GitHub 的 schedule 入口已移除，由外部定时器触发。
