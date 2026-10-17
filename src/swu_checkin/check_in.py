@@ -160,7 +160,17 @@ def _submit_checkin(ctx: CheckinContext, timeout: int) -> int:
             timeout=timeout
         )
         response.raise_for_status()
-        return 1
+        # HTTP 200 only means the request arrived. Confirm this exact task
+        # changed to signed-in before reporting a successful submission.
+        for wait in (0, 1, 2):
+            if wait:
+                time.sleep(wait)
+            confirmed = get_transition_today(ctx.token, timeout)
+            if (confirmed and str(confirmed.get("id")) == str(record_id)
+                    and str(confirmed.get("formId")) == str(form_id)
+                    and confirmed.get("qdzt") == "已签到"):
+                return 1
+        return 4
         
     except requests.exceptions.RequestException:
         return 4
@@ -255,3 +265,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
